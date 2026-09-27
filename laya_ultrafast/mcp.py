@@ -317,6 +317,9 @@ class LayaMCPServer:
                 agent.policy.plan_meta = {"model": "mcp_client", "latency_ms": 0}
             self.sessions[session_id] = agent
         else:
+            if url and hasattr(agent, "navigate") and url != agent.state.get("page", {}).get("url"):
+                self.log(f"Navigating session '{session_id}' to {url}")
+                agent.navigate(url)
             if goal:
                 agent.state["goal"] = goal
                 if getattr(agent, "policy", None):
@@ -430,9 +433,12 @@ class LayaMCPServer:
             agent = Agent(url, "Inspect page")
             self.sessions[session_id] = agent
         elif url and url != agent.state.get("page", {}).get("url"):
-            agent.close()
-            agent = Agent(url, "Inspect page")
-            self.sessions[session_id] = agent
+            if hasattr(agent, "navigate"):
+                agent.navigate(url)
+            else:
+                agent.close()
+                agent = Agent(url, "Inspect page")
+                self.sessions[session_id] = agent
 
         page = agent.state.get("page", {})
         fresh_elements = observed(page)

@@ -318,3 +318,20 @@ def test_navigation_during_prediction_reobserves_without_action(runner):
     assert runner.state["status"] == "ready"
     assert runner.state["decision"] is None
     runner.state["browser"].act.assert_not_called()
+
+
+def test_agent_navigate_updates_state_and_resets_policy(runner):
+    runner.state["browser"].navigate = Mock(return_value={
+        "url": "https://example.test/new-route",
+        "title": "New Route",
+        "text": "New Route Content",
+        "actions": [{"id": "e1", "kind": "click", "label": "Save", "role": "button", "node": 10}],
+        "fingerprint": "new-fp",
+    })
+    snapshot = runner.navigate("https://example.test/new-route")
+    runner.state["browser"].navigate.assert_called_once_with("https://example.test/new-route")
+    assert runner.state["page"]["url"] == "https://example.test/new-route"
+    assert runner.state["status"] == "ready"
+    assert snapshot["page"]["url"] == "https://example.test/new-route"
+
+

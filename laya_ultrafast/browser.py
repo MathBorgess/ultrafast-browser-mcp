@@ -26,11 +26,63 @@ class Browser:
         # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
         self.call("Page.navigate", url=url)
-        deadline = time.monotonic() + 15
+        self.wait_for_settled(timeout=15)
+
+    def wait_for_settled(self, timeout=3.5):
+        """Wait for document readyState and modern SPA hydration/DOM quiescence."""
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.evaluate("document.readyState") == "complete":
-                break
+            try:
+                if self.evaluate("document.readyState") == "complete":
+                    break
+            except Exception:
+                pass
             time.sleep(0.02)
+        # Settle SPA: wait for DOM mutations to quiet down and loading indicators to clear
+        settle_script = """(() => new Promise(resolve => {
+          let timer = null;
+          let mutations = 0;
+          const observer = new MutationObserver(() => {
+            mutations++;
+            clearTimeout(timer);
+            timer = setTimeout(checkSettled, 120);
+          });
+          if (document.documentElement) {
+            observer.observe(document.documentElement, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              characterData: true
+            });
+          }
+          function checkSettled() {
+            const loading = document.querySelector(
+              '[aria-busy="true"], [role="progressbar"], .skeleton, [class*="skeleton"], ' +
+              '[class*="loading-spinner"], [class*="animate-pulse"]'
+            );
+            if (loading && mutations < 60) {
+              timer = setTimeout(checkSettled, 100);
+              return;
+            }
+            observer.disconnect();
+            resolve({settled: true, mutations});
+          }
+          timer = setTimeout(checkSettled, 120);
+          setTimeout(() => {
+            observer.disconnect();
+            resolve({settled: false, timeout: true});
+          }, 2500);
+        }))()"""
+        try:
+            self.call("Runtime.evaluate", expression=settle_script, awaitPromise=True, returnByValue=True)
+        except Exception:
+            pass
+
+    def navigate(self, url):
+        """Navigate existing browser tab to a new URL and settle for SPAs."""
+        self.call("Page.navigate", url=url)
+        self.wait_for_settled(timeout=15)
+        return self.observe(screenshot=True)
 
     def call(self, method, **params):
         return cdp(method, session_id=self.session, **params)

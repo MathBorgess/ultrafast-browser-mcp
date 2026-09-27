@@ -75,6 +75,9 @@
       const value=e.getAttribute('aria-'+key);
       if (value!==null) base[key]=value;
     }
+    const dataState = e.getAttribute('data-state');
+    if (dataState === 'checked' || dataState === 'on') base.checked = 'true';
+    else if (dataState === 'unchecked' || dataState === 'off') base.checked = 'false';
     if (['checkbox','radio'].includes(e.type)) base.checked=String(e.checked);
     if (e.tagName==='SELECT') {
       for (const o of e.options) if (!o.selected && !o.disabled && !o.closest('optgroup[disabled]'))
@@ -93,7 +96,7 @@
   // Open pickers sometimes list plain clickable items with no role (a trip-type menu of <li>s).
   // Only inside dialogs, menus and listboxes: whole-page pointer scanning would flood the action list.
   const seen=new Set(actions.map(a=>cache.nodes.get(a.node)));
-  const pickers='[role="dialog"],dialog[open],[aria-modal="true"],[role="menu"],[role="listbox"],[popover]';
+  const pickers='[role="dialog"],dialog[open],[aria-modal="true"],[role="menu"],[role="listbox"],[popover],[data-radix-portal],[data-radix-popper-content-wrapper],[data-floating-ui-portal]';
   for (const root of document.querySelectorAll(pickers)) {
     if (!visible(root)) continue;
     for (const e of root.querySelectorAll('*')) {

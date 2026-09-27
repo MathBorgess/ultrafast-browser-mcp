@@ -98,6 +98,24 @@ class Agent:
             "elements": action_space(self.state["page"]["actions"])[0],
         }
 
+    def navigate(self, url):
+        """Navigate existing browser tab to a new URL and update state for SPAs/links."""
+        browser = getattr(self, "browser", None) or self.state.get("browser")
+        if hasattr(browser, "navigate"):
+            page = browser.navigate(url)
+        else:
+            browser.call("Page.navigate", url=url)
+            page = browser.observe(screenshot=self.screenshots)
+        self.state["page"] = page
+        self.state["decision"] = None
+        self.state["status"] = "ready"
+        if getattr(self, "policy", None):
+            self.policy.fields.clear()
+            self.policy.attempts.clear()
+            self.policy.waits = 0
+            self.policy.tried.clear()
+        return self.snapshot()
+
     def command(self, name, body=None):
         body = body or {}
         state = self.state

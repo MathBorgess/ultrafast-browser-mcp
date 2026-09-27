@@ -283,6 +283,39 @@ def test_mcp_inspect_page(mcp_server, monkeypatch):
     assert "Destination" in data["fields_on_page"]
     assert "Search Flights" in data["fields_on_page"]
 
+    # In modern SPAs, navigating to a new URL in the same session must reuse the tab
+    def fake_navigate(new_url):
+        mock_agent.state["page"] = {
+            "url": new_url,
+            "title": "Flight Results",
+            "text": "Results loaded",
+            "actions": [{"id": "e4", "kind": "click", "label": "Select", "role": "button", "node": 4}],
+        }
+        return mock_agent.state
+
+    mock_agent.navigate = Mock(side_effect=fake_navigate)
+    mock_agent.close = Mock()
+
+    req2 = {
+        "jsonrpc": "2.0",
+        "id": 92,
+        "method": "tools/call",
+        "params": {
+            "name": "laya_inspect_page",
+            "arguments": {
+                "url": "https://example.test/results",
+                "session_id": "inspect-test",
+            },
+        },
+    }
+    res2 = mcp_server.handle_request(req2)
+    assert res2["result"]["isError"] is False
+    data2 = json.loads(res2["result"]["content"][0]["text"])
+    assert data2["url"] == "https://example.test/results"
+    assert "Select" in data2["fields_on_page"]
+    mock_agent.navigate.assert_called_once_with("https://example.test/results")
+    mock_agent.close.assert_not_called()
+
 
 def test_mcp_session_lifecycle(mcp_server, monkeypatch):
     mock_agent = Mock()

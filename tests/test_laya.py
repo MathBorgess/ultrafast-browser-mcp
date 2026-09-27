@@ -218,3 +218,34 @@ def test_skyscanner_verification_reads_the_search_url():
     assert verify(good, day)["passed"]
     assert not verify(dict(good, url=good["url"].replace("261020", "261021")), day)["passed"]
     assert not verify(dict(good, url="https://www.skyscanner.net/sttc/px/captcha-v2/index.html"), day)["passed"]
+
+
+def test_observed_switch_toggle_states():
+    page = {
+        "actions": [
+            {
+                "id": "e1",
+                "node": 1,
+                "kind": "click",
+                "role": "switch",
+                "label": "Tornar público",
+                "checked": "true",
+            },
+            {
+                "id": "e2",
+                "node": 2,
+                "kind": "click",
+                "role": "switch",
+                "label": "Notificações",
+                "checked": "false",
+            },
+        ]
+    }
+    elems = laya.observed(page)
+    assert len(elems) == 2
+    assert elems[0]["role"] == "switch"
+    assert elems[0]["current"] == "checked"
+    assert elems[1]["current"] == "unchecked"
+    assert laya.settled({"what": "Tornar público", "value": "checked"}, elems[0]) is True
+    assert laya.settled({"what": "Notificações", "value": "unchecked"}, elems[1]) is True
+
