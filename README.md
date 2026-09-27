@@ -65,19 +65,9 @@ TEXT_MODEL_BASE_URL=http://localhost:11434/v1
 TEXT_MODEL=gemma4:latest
 ```
 
-## Demos
+## Using Laya Ultrafast
 
-| Scenario | Command |
-| --- | --- |
-| Google Flights (checks the final page) | `uv run --env-file .env python examples/flights.py --date 2026-10-20 --keep-open` |
-| Skyscanner (checks the final page) | `uv run --env-file .env python examples/skyscanner.py --date 2026-10-20 --keep-open` |
-| Any site and goal | `uv run --env-file .env python examples/run.py --url URL --goal 'A narrow goal'` |
-
-Flight sites only offer future dates, so pass `--date`. It defaults to 30 days ahead. The examples never select or book a flight.
-
-**Skyscanner** may show an "Are you a person or a robot?" check, especially to automated or headless browsers. The agent does not try to get past it. Run it in your everyday Chrome and solve the check yourself if it appears. Skyscanner also ticks "Add a place to stay" by default, so its goal says "without adding a place to stay".
-
-## MCP Server (Model Context Protocol)
+### 1. MCP-First (Recommended)
 
 Connect your external AI agents (e.g. Claude Desktop, Cursor, Antigravity, Cline, Windsurf) to Laya Ultrafast over stdio MCP:
 
@@ -87,7 +77,7 @@ uv run laya-mcp
 uv run python -m laya_ultrafast.mcp
 ```
 
-### Configuration for Claude Desktop / Cursor / Antigravity
+#### MCP Client Configuration (Claude Desktop / Cursor / Antigravity)
 
 Add to your MCP settings file (e.g. `claude_desktop_config.json` or `.gemini/antigravity-ide/mcp_config.json`):
 
@@ -107,7 +97,7 @@ Add to your MCP settings file (e.g. `claude_desktop_config.json` or `.gemini/ant
 }
 ```
 
-### How It Works: The Calling Model Plans, Laya Executes
+#### How It Works: The Calling Model Plans, Laya Executes
 
 When using the MCP server, **you (the external model using the MCP) are in control of setting the goal and making the plan**:
 1. **Inspect / Probe**: Call `laya_inspect_page` or `laya_run_task` without a plan. Laya loads the page and returns interactive form fields, buttons, and visible text with `status: "plan_needed"`.
@@ -115,7 +105,7 @@ When using the MCP server, **you (the external model using the MCP) are in contr
 3. **Execute**: Call `laya_run_task` with your `goal` and `plan`. Laya's local MLX model executes the fast browser loop locally (~20ms per action, zero cloud tokens).
 4. **Multi-Step & Rescue**: When a step finishes (`status: "step_completed"`), Laya returns control so you can plan the next step. If an obstacle or dialog blocks progress (`status: "rescue_needed"`), inspect candidate elements and call `laya_rescue_task` to dismiss or reroute.
 
-### Available Tools
+#### Available MCP Tools
 
 - **`laya_run_task`**: Execute a browser task on any website using Laya's ultrafast local decisions. The calling model provides the goal and plan.
 - **`laya_inspect_page`**: Navigate to any URL (or inspect an active session) and return accessible form fields, buttons, page title, URL, and visible text excerpt.
@@ -126,13 +116,57 @@ When using the MCP server, **you (the external model using the MCP) are in contr
 - **`laya_session_close`**: Close an active session and release browser resources.
 - **`laya_list_sessions`**: List all open interactive browser sessions.
 
+---
+
+### 2. Interactive Web Demo
+
+To visualize Laya in action locally with a built-in DOM inspector and test scenarios:
+
+```bash
+uv run laya
+```
+
+Open **http://127.0.0.1:8766**, choose a scenario (e.g. Travel or Reading Room), and click **Start demo → Run automatically**.
+
+---
+
+### 3. Programmatic Python API
+
+You can also run Laya directly in Python without MCP:
+
+```python
+from laya_ultrafast import Agent
+
+with Agent("https://en.wikipedia.org", "Search for Alan Turing and open the article") as agent:
+    for state in agent.run():
+        last_action = state["history"][-1] if state["history"] else {}
+        print(f"{state['elapsed_ms']:>5} ms | {state['status']:<15} | {last_action.get('action', '')}")
+```
+
+---
+
+## Adendo: Testes e Uso do Laya Ultrafast Puro (Standalone / Upstream)
+
+> [!NOTE]
+> **Sobre os exemplos e benchmarks legados:**
+> As versões originais de upstream ([laya-ultrafast](https://github.com/ipenywis/laya-ultrafast) e [jev-ultrafast](https://github.com/browser-use/jev-ultrafast)) utilizavam scripts estáticos específicos para testar sites como Google Flights e Skyscanner (`examples/flights.py`, `examples/skyscanner.py`, `scripts/measure_flights.py`).
+> 
+> Neste repositório, **migramos para uma arquitetura MCP-First**: eliminamos scripts acoplados a sites específicos em favor de ferramentas genéricas acionadas por agentes inteligentes.
+> 
+> Caso queira ver ou executar os testes do Laya Ultrafast puro:
+> 1. **Testes unitários offline:** Execute `uv run pytest`. Toda a suíte de contratos de decisão do Laya, snapshots DOM, guards de frescor e execução de ações roda localmente e sem custo de API.
+> 2. **Cenários do demo local:** Execute `uv run laya` para testar os cenários dinâmicos de fixture (`travel` e `reading room`) na porta 8766.
+> 3. **Benchmarks históricos:** Os scripts e dados originais de benchmark de voos podem ser consultados no histórico do Git ou nos repositórios upstream:
+>    - [ipenywis/laya-ultrafast](https://github.com/ipenywis/laya-ultrafast)
+>    - [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)
+
 ## Measurements
 
 These were measured on an M1 Max with `inception/mercury-2.5` on OpenRouter as the text model. Timing includes the planning call (~1–1.5 s):
 
 | Task | Result | Time |
 | --- | --- | --- |
-| Google Flights, one way Zürich → London, checked by `examples/flights.py` | 5/5 passed | 7.5–12.1 s |
+| Google Flights: one way Zürich → London | 5/5 passed | 7.5–12.1 s |
 | Wikipedia: open the Gödel's incompleteness theorems article | 2/2 | ~3–5 s |
 | Local hotel fixture: filters, search, open Casa Flora | 2/2 | ~1.7 s |
 | Local reading-room fixture: open the matching article | 2/2 | ~1 s |
@@ -144,7 +178,7 @@ This is a small set of repeated tasks, not a general reliability benchmark. The 
 
 - Runs only on Apple Silicon, because Laya runs through MLX.
 - The Laya policy is new and tested on few sites. The original jev-ultrafast limits still apply: shadow roots, frames, canvas, uploads, pop-up tabs, nested scrolling and arbitrary keyboard widgets are out of scope. See [its README](https://github.com/browser-use/jev-ultrafast#evidence-and-limits).
-- A `DONE` decision is not proof of success. The examples check the final page independently.
+- A `DONE` decision is not proof of success: the calling agent or verification logic should verify the resulting page state.
 - Planning quality depends on the text model. `inception/mercury-2.5` sometimes returns malformed JSON, so the planner retries up to 3 times.
 
 ## Everything else
