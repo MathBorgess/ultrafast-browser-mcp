@@ -1,26 +1,22 @@
-# Laya Ultrafast ⚡
+# Ultrafast Browser MCP ⚡
 
-**A local, open-weight port of [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast).**
+**A fast, low-cost Browser MCP Server that empowers any intelligent agent to navigate the web at machine speed.**
 
 > [!NOTE]
-> This project is a clone of **[jev-ultrafast](https://github.com/browser-use/jev-ultrafast) by [Browser Use](https://github.com/browser-use)**, ported to make its decisions with **[Laya](https://github.com/mizorewww/laya-mlx)** running locally through MLX. The browser agent, DOM snapshot, executor, safety checks, inspector and most of the design are theirs. All credit for the original work goes to the jev-ultrafast authors. For how the agent works, see the [original repository](https://github.com/browser-use/jev-ultrafast).
+> This project originated as a fork of **[laya-ultrafast](https://github.com/ipenywis/laya-ultrafast)** (which itself ported **[jev-ultrafast](https://github.com/browser-use/jev-ultrafast) by [Browser Use](https://github.com/browser-use)** to local MLX). It now evolves independently as a dedicated, universal **Model Context Protocol (MCP)** server. While acknowledging the great foundation of the original works, this repository re-architects the loop for modern agent systems: external LLM agents retain full reasoning control (multi-step planning, page inspection, and obstacle rescue), while Laya runs locally to execute DOM actions at millisecond speeds with zero cloud per-step token cost.
 
 > [!IMPORTANT]
-> **Apple Silicon only.** Laya runs through [laya-mlx](https://github.com/mizorewww/laya-mlx), which needs an M-series Mac, macOS 14+, and Python 3.11+ (this project uses 3.12+). If you're looking to run it on a different OS/machine, check the original [Laya](https://github.com/NandhaKishorM/laya)
+> **Apple Silicon only.** Laya runs through [laya-mlx](https://github.com/mizorewww/laya-mlx), which needs an M-series Mac, macOS 14+, and Python 3.11+ (this project uses 3.12+). If you're looking to run it on a different OS/machine, check the original [Laya](https://github.com/NandhaKishorM/laya).
 
-## What is different from jev-ultrafast
+## Why Laya Ultrafast MCP?
 
-jev-ultrafast asks [TypeSafe's Jev](https://docs.typesafe.ai/introduction), a hosted model, to choose each browser action. This port replaces that API call with **Laya**, an open-weight typed-decision model that runs on your Mac:
+Existing browser agents are either slow, expensive (burning frontier LLM tokens on every DOM click/scroll), or black boxes that run brittle static scripts. This project bridges the gap:
 
-- **No decision API and no per-step cost.** Each decision is a local forward pass. The median is about 33 ms on an M1 Max.
-- **One text-model call per task.** An OpenAI-compatible model (OpenRouter by default, or a local server such as Ollama) turns the goal into field values, the item to open, and a finish condition. If you use a local text model, the whole agent runs offline, apart from the websites it browses.
-- **A different policy.** Laya answers narrow questions well: which field is the destination, whether `Tue, Oct 20` matches `October 20, 2026`, which suggestion is London. It does not reliably answer the open question "what should the browser do next?". So [`laya_ultrafast/laya.py`](laya_ultrafast/laya.py) combines narrow Laya questions with rules that apply on any site:
-  1. Fill the values the goal states. Laya maps each one to a field, and Laya or plain code checks it.
-  2. After typing or opening a control, choose from the options that appeared.
-  3. Submit, then open the item the goal names, or wait for results that name the requested values.
-
-  Every target is still an element the agent observed on the page, and there are no site-specific plans.
-- **Hosted mode still works.** Set `DECISION_MODEL=typesafe` to use the original Jev policy unchanged.
+- **Ultra-low Cost & Zero Cloud Decision Overhead**: Decisions run locally via Laya on MLX (~33 ms per action on an M1 Max). No per-step API calls to frontier vision/multimodal models for clicking or typing.
+- **Model-Driven Multi-Step Planning**: The controller model using the MCP is responsible for setting the goal and structuring the multi-step plan (`requirements`, `open`, `finish`, `is_final_step`). When an intermediate step completes (`status: "step_completed"`), control yields back to the controller model to review the page and plan the next step.
+- **LLM Rescue on Obstacles**: When the local agent encounters obstacles (unexpected cookie banners, popups, or unfamiliar dynamic forms), it reports `status: "rescue_needed"` with candidate interactive elements, allowing the reasoning LLM to prescribe targeted corrective actions or update the plan.
+- **Plug-and-Play MCP Interface**: Exposes standardized tools (`laya_run_task`, `laya_inspect_page`, `laya_rescue_task`, `laya_session_*`) over stdio MCP for instant integration into Cursor, Claude Desktop, Antigravity, or custom agent frameworks.
+- **Hosted Fallback**: Set `DECISION_MODEL=typesafe` to switch back to the original hosted Jev policy if desired.
 
 ## Laya setup
 
@@ -38,8 +34,8 @@ Later runs load it from the Hugging Face cache and need no network for decisions
 ## Quick start
 
 ```bash
-git clone <this repository>
-cd laya-ultrafast
+git clone https://github.com/MathBorgess/ultrafast-browser-mcp.git
+cd ultrafast-browser-mcp
 uv sync
 uv run hf download aac6fef/laya-typed-decisions-mlx
 cp .env.example .env    # then set TEXT_MODEL_API_KEY, or point TEXT_MODEL_BASE_URL at a local server
@@ -80,6 +76,55 @@ TEXT_MODEL=gemma4:latest
 Flight sites only offer future dates, so pass `--date`. It defaults to 30 days ahead. The examples never select or book a flight.
 
 **Skyscanner** may show an "Are you a person or a robot?" check, especially to automated or headless browsers. The agent does not try to get past it. Run it in your everyday Chrome and solve the check yourself if it appears. Skyscanner also ticks "Add a place to stay" by default, so its goal says "without adding a place to stay".
+
+## MCP Server (Model Context Protocol)
+
+Connect your external AI agents (e.g. Claude Desktop, Cursor, Antigravity, Cline, Windsurf) to Laya Ultrafast over stdio MCP:
+
+```bash
+uv run laya-mcp
+# or:
+uv run python -m laya_ultrafast.mcp
+```
+
+### Configuration for Claude Desktop / Cursor / Antigravity
+
+Add to your MCP settings file (e.g. `claude_desktop_config.json` or `.gemini/antigravity-ide/mcp_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "ultrafast-browser": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/path/to/ultrafast-browser-mcp",
+        "run",
+        "laya-mcp"
+      ]
+    }
+  }
+}
+```
+
+### How It Works: The Calling Model Plans, Laya Executes
+
+When using the MCP server, **you (the external model using the MCP) are in control of setting the goal and making the plan**:
+1. **Inspect / Probe**: Call `laya_inspect_page` or `laya_run_task` without a plan. Laya loads the page and returns interactive form fields, buttons, and visible text with `status: "plan_needed"`.
+2. **Plan**: As the reasoning model, you define the plan: `requirements` (concrete values to fill/select), `open` (specific item/link to click), `finish` (visible completion condition), and `is_final_step`.
+3. **Execute**: Call `laya_run_task` with your `goal` and `plan`. Laya's local MLX model executes the fast browser loop locally (~20ms per action, zero cloud tokens).
+4. **Multi-Step & Rescue**: When a step finishes (`status: "step_completed"`), Laya returns control so you can plan the next step. If an obstacle or dialog blocks progress (`status: "rescue_needed"`), inspect candidate elements and call `laya_rescue_task` to dismiss or reroute.
+
+### Available Tools
+
+- **`laya_run_task`**: Execute a browser task on any website using Laya's ultrafast local decisions. The calling model provides the goal and plan.
+- **`laya_inspect_page`**: Navigate to any URL (or inspect an active session) and return accessible form fields, buttons, page title, URL, and visible text excerpt.
+- **`laya_rescue_task`**: Prescribe a corrective action (`click`, `fill`, `wait`, or `replan`) when a task reports `status: "rescue_needed"`.
+- **`laya_session_start`**: Start an interactive browser session on any website with a goal for step-by-step navigation.
+- **`laya_session_step`**: Execute one step (`tick`) in an active browser session.
+- **`laya_session_get_state`**: Inspect current page title, URL, visible text excerpt, and action history.
+- **`laya_session_close`**: Close an active session and release browser resources.
+- **`laya_list_sessions`**: List all open interactive browser sessions.
 
 ## Measurements
 
