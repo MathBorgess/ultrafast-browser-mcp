@@ -1,22 +1,23 @@
-# Laya Ultrafast
+# Ultrafast Browser MCP (MathBorgess/ultrafast-browser-mcp)
 
-Read README.md before editing. Keep the loop small: page -> indexed elements -> operation + target -> execution.
-Google Flights only offers future dates: run `examples/flights.py --date YYYY-MM-DD`.
+Independent repository evolved from `laya-ultrafast` and `jev-ultrafast`.
+Keep the loop small: page -> indexed elements -> operation + target -> execution.
 
-- The input is one natural-language goal. Do not add site-specific plans or hardcoded field values.
-- Local Laya decisions (laya_ultrafast/laya.py) are the default. Laya answers narrow typed questions; generic rules
-  compose them. Rules must hold on any site. Measure any rule change on Flights, Wikipedia, and both fixtures.
-- The text model plans once per task (requirements, the item to open, the finish condition). In Laya mode TYPE_TEXT
-  types a planned value; it does not call the text model per field.
-- With DECISION_MODEL=typesafe, TypeSafe chooses an operation and operation-specific target heads in one request.
-  Consume only the selected operation's target.
-- Targets must map to observed elements and supported operations. Never let the model emit selectors or executable code.
-- In TypeSafe mode TYPE_TEXT invokes the text LLM. Cache a stale retry's value only while its entire helper input is identical.
-- Never retry a browser mutation. Log execution before observing its result.
-- Screenshots are optional; the model does not consume them. Keep demonstration footage at its original speed.
-- Keep credentials server-side and .env ignored. Tests must not call paid APIs.
-- Verify actual final outcomes independently. A DONE choice is not proof of success.
-- Keep examples, README claims, raw evidence, and model-call counts consistent.
-- Do not commit or push unless the user requests it.
+### Repository & Remotes Policy
+- **Active repository:** `origin` points to `https://github.com/MathBorgess/ultrafast-browser-mcp.git`.
+- **Target branches:** Push only to `origin` (e.g. `feat/*`, `main`).
+- **NEVER send PRs or push code back to upstream (`ipenywis/laya-ultrafast` or `browser-use/jev-ultrafast`)**. This project is an independent product and all features, fixes, and reports belong exclusively to `MathBorgess/ultrafast-browser-mcp`.
 
-Checks: uv run ruff check ., uv run pytest, node --check laya_ultrafast/static/app.js, uv build.
+### Core Architecture & Guidelines
+- **MCP Server first:** Expose fast local browser capabilities over stdio MCP (`laya_run_task`, `laya_inspect_page`, `laya_rescue_task`, `laya_session_*`).
+- **Model-driven planning:** The controller model using the MCP sets the goal and plans steps (`requirements`, `open`, `finish`, `is_final_step`). Do not hardcode site-specific plans or field values.
+- **Multi-step & LLM Rescue:** `STEP` transitions control to the calling model for the next milestone. `RESCUE` escalates obstacles (overlays, popups) for diagnosis via `candidate_elements`.
+- **SPA & Hydration awareness:** Use `wait_for_settled()` for asynchronous client-side auth/DOM rehydration (React, Supabase, Lovable, Next.js). Reuse active session tabs via `agent.navigate()` instead of destroying sessions.
+- **Local Laya decisions:** Laya (421M MLX) answers narrow typed questions locally (~30ms, zero cloud tokens).
+- **Safe actions:** Targets must map to observed elements and supported operations. Never emit raw selectors or executable code. Never retry a browser mutation. Log execution before observing results.
+- **Reports:** Save experiment summaries and benchmark results in the `reports/` directory.
+- **Security & Privacy:** Keep credentials server-side and `.env` ignored. Offline unit tests must not call paid APIs.
+- **Commit policy:** Do not commit or push unless explicitly requested by the user.
+
+Checks: uv run ruff check ., uv run pytest, node --check laya_ultrafast/static/app.js, node --check laya_ultrafast/snapshot.js, uv build.
+
