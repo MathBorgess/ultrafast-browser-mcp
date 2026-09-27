@@ -20,6 +20,27 @@ Browser mutations are not retried by transport recovery. Completed execution is 
 
 The next observation waits for up to two animation frames or 50 ms after an interaction. Editable ARIA comboboxes instead wait for visible options, capped at 200 ms. This avoids paying for a prediction before autocomplete suggestions arrive. An explicit WAIT remains 100 ms; network loading is never fast-forwarded in the recording.
 
+## Multi-step execution and rescue
+
+Complex tasks often require sequential phases (e.g., searching for options, selecting a result or applying filters, and completing form details). Rather than forcing every browser run into a single monolithic plan:
+
+1. **Multi-step goal lifecycle (`STEP` operation)**:
+   - When a task begins, the text model decomposes the overarching goal into sequential milestones with `plan_multi_step_goal`.
+   - The fast local policy (`LayaPolicy`) executes the requirements and finish condition for the active step.
+   - When the step's finish condition is satisfied, the policy emits `STEP` if subsequent steps remain, or `DONE` if the step is final.
+   - In `Agent.command("act")`, a `STEP` outcome logs the completed milestone in `state["history"]`, captures a fresh page observation, and calls `plan_next_step` to evaluate progress and generate requirements for the next stage on the updated DOM.
+   - The policy advances its internal step state (`advance_step`), and execution continues seamlessly in `ready` status.
+
+2. **Text model rescue (`RESCUE` choice)**:
+   - Local policies can encounter unexpected obstacles: cookie consent banners, unexpected modal overlays, unhandled validation states, or 3 failed attempts on form requirements.
+   - Instead of abruptly failing with `BLOCKED`, the policy escalates to `RESCUE`.
+   - The text model (`rescue_agent`) diagnoses the issue from a fresh page snapshot, recent action history, and candidate elements.
+   - The rescue response prescribes an action:
+     - Direct corrective browser action (`click` or `fill` targeting an observed element, such as closing an overlay),
+     - A revised step plan (`replan`),
+     - Or an unrecoverable signal (`give_up`), which then gracefully halts execution as `BLOCKED`.
+   - To guarantee safety and prevent infinite recovery loops, the policy tracks its rescue state and halts if a subsequent hurdle cannot make progress.
+
 ## What changed after the first demo
 
 The initial prototype used five manually prepared steps and copied quoted strings. That proved finite-choice browser execution but did not demonstrate task decomposition or text generation. The current policy removes that shortcut and uses the original goal throughout. Operation/target distributions replace the old flat-choice/lookahead/Noul arrangement.

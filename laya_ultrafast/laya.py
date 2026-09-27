@@ -13,7 +13,7 @@ import time
 import unicodedata
 from urllib.parse import urlparse
 
-from .model import plan_goal, validate_choice
+from .model import plan_goal, plan_multi_step_goal, validate_choice
 
 DEFAULT_MODEL = "aac6fef/laya-typed-decisions-mlx"
 FIELD_ROLES = {"combobox", "textbox", "searchbox", "spinbutton", "checkbox", "radio", "switch"}
@@ -195,10 +195,16 @@ def shortlist(candidates, text, limit, bonus=None, top_tier=False, margin=1):
 
 
 class LayaPolicy:
-    def __init__(self, goal):
+    def __init__(self, goal, *, multi_step=True):
         self.goal = goal
+        self.multi_step = multi_step
         self.plan = None
         self.plan_meta = None
+        self.steps = []
+        self.current_step_index = 0
+        self.completed_steps = []
+        self.is_final_step = True
+        self.rescued = False
         self.fields = {}  # requirement index -> observed node
         self.met = set()
         self.skipped = set()
@@ -225,6 +231,8 @@ class LayaPolicy:
             self.failed[step["node"]] = self.failed.get(step["node"], 0) + 1
         if len(history) > self.seen and step and history[-1].get("choice") == step["choice"]:
             self.last = step
+            if history[-1].get("page_changed"):
+                self.rescued = False
             if step["req"] is not None:
                 self.attempts[step["req"]] = self.attempts.get(step["req"], 0) + 1
                 self.edit_url, self.submitted = step["url"], False
@@ -269,6 +277,49 @@ class LayaPolicy:
             return None
         return next(e for e in ranked if str(e["node"]) == answer["choice"]), answer
 
+    def advance_step(self, next_plan, next_meta=None):
+        """Advance to the next step using the new step plan."""
+        current_step_name = (
+            self.steps[self.current_step_index]
+            if self.current_step_index < len(self.steps)
+            else self.plan.get("finish", f"Step {self.current_step_index + 1}")
+        )
+        self.completed_steps.append(current_step_name)
+        self.current_step_index += 1
+        self.plan = next_plan
+        self.plan_meta = next_meta
+        self.is_final_step = bool(next_plan.get("is_final_step", False) or next_plan.get("all_steps_complete", False))
+        self.fields.clear()
+        self.met.clear()
+        self.skipped.clear()
+        self.attempts.clear()
+        self.submitted = False
+        self.waits = 0
+        self.tried.clear()
+        self.typed = False
+        self.acted = None
+        self.search_added = False
+        self.frozen.clear()
+        self.rescued = False
+        self.pending = None
+        self.failed.clear()
+
+    def apply_rescue(self, rescue_result):
+        """Incorporate rescue result: update plan or reset stuck requirement state."""
+        self.rescued = True
+        revised = rescue_result.get("revised_plan")
+        if revised and isinstance(revised, dict):
+            self.plan.update(revised)
+            self.met.clear()
+            self.attempts.clear()
+            self.skipped.clear()
+            self.fields.clear()
+            self.submitted = False
+            self.waits = 0
+            self.tried.clear()
+        self.skipped.clear()
+        self.failed.clear()
+
     # Decisions ----------------------------------------------------------------------------------------------
 
     def choose(self, page, history):
@@ -282,12 +333,28 @@ class LayaPolicy:
         elements = observed(page)
         if self.plan is None:
             labels = list(dict.fromkeys(display(e) for e in elements if plannable(e)))
-            self.plan, self.plan_meta = plan_goal(self.goal, labels)
+            if self.multi_step:
+                self.plan, self.plan_meta = plan_multi_step_goal(self.goal, labels)
+                self.steps = self.plan.get("steps", [self.goal])
+                self.current_step_index = self.plan.get("step_index", 0)
+                self.is_final_step = bool(self.plan.get("is_final_step", len(self.steps) <= 1))
+            else:
+                self.plan, self.plan_meta = plan_goal(self.goal, labels)
+                self.steps = [self.goal]
+                self.current_step_index = 0
+                self.is_final_step = True
+        else:
+            if not self.steps:
+                self.steps = self.plan.get("steps", [self.goal])
+                self.current_step_index = self.plan.get("step_index", 0)
+            if "is_final_step" in self.plan:
+                self.is_final_step = bool(self.plan["is_final_step"])
         self.answers, self.questions, self.tokens = {}, {}, 0
         op, element, action, picked, kind, req, text = self.decide(page, elements)
         answer = picked[1] if picked else None
         indices = {str(e["node"]): e["index"] for e in elements}
-        choice = action["id"] if action else {"DONE": "DONE", "BLOCKED": "BLOCKED"}.get(op, "wait")
+        ctrls = {"DONE": "DONE", "BLOCKED": "BLOCKED", "STEP": "STEP", "RESCUE": "RESCUE"}
+        choice = action["id"] if action else ctrls.get(op, "wait")
         probability = answer["probabilities"][answer["choice"]] if answer else 1.0
         target = element["index"] if element else None
         if action and action["kind"] == "select":
@@ -393,8 +460,15 @@ class LayaPolicy:
                 return "SELECT", e, option, (e, answer), "select", i, None
             return "CLICK", e, e["actions"]["click"], None, "toggle" if e["role"] in TOGGLES else "open", i, None
 
+        if reqs and not self.met and (self.met | self.skipped) >= set(range(len(reqs))):
+            if not self.rescued:
+                self.rescued = True
+                return "RESCUE", None, None, None, "rescue", None, None
+            return "BLOCKED", None, None, None, "blocked", None, None
+
         # 3. Everything stated is set. Check the finish condition once something was submitted or navigated.
         finish = self.plan["finish"]
+        is_final = bool(self.plan.get("is_final_step", self.is_final_step))
         navigated = self.edit_url is not None and location(page["url"]) != location(self.edit_url)
         if item:
             # An opened item names its page. Accept its title when it carries the item's words, or the words
@@ -402,7 +476,8 @@ class LayaPolicy:
             chosen = (last and last["kind"] == "item" and relevance({"label": last["label"], "current": ""}, item)
                       and titled(page["title"], last["label"]))
             if chosen or titled(page["title"], item):
-                return "DONE", None, None, None, "done", None, None
+                finish_op = "DONE" if is_final else "STEP"
+                return finish_op, None, None, None, finish_op.lower(), None, None
         elif self.submitted or navigated or not reqs:
             # Laya's yes/no finish check was unreliable; contrasting page kinds separated real outcomes.
             state = f"Page title: {page['title']}\nPage: {summary(page['text'], finish)}"
@@ -423,7 +498,8 @@ class LayaPolicy:
             if (not reqs and done["choice"] == "finish") or (
                 searched and (len(matching) >= 2 or (laya_done and self.waits >= MAX_RESULT_WAITS))
             ):
-                return "DONE", None, None, None, "done", None, None
+                finish_op = "DONE" if is_final else "STEP"
+                return finish_op, None, None, None, finish_op.lower(), None, None
             if searched and self.waits < MAX_RESULT_WAITS:
                 return "WAIT", None, None, None, "wait", None, None
         if last and last["kind"] in {"submit", "item", "next"} and self.waits < 2 and (self.submitted or navigated):
@@ -455,6 +531,9 @@ class LayaPolicy:
         picked = self.pick("next", candidates, state, "Which element should be clicked next to reach the goal?",
                            f"{self.goal} {finish}", bonus=lambda e: e["node"] in fresh, top_tier=True, margin=0)
         if not picked:
+            if not self.rescued:
+                self.rescued = True
+                return "RESCUE", None, None, None, "rescue", None, None
             return "BLOCKED", None, None, None, "blocked", None, None
         return self.click(picked, "next", None)
 

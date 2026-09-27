@@ -18,7 +18,15 @@ from .adapter import (
     get_model_provider,
     run_cli_chat,
 )
-from .questions import GOAL_PLAN, NEXT_ACTION, TARGET, TEXT_VALUE
+from .questions import (
+    GOAL_PLAN,
+    MULTI_STEP_GOAL_PLAN,
+    NEXT_ACTION,
+    NEXT_STEP_PLAN,
+    RESCUE_PROMPT,
+    TARGET,
+    TEXT_VALUE,
+)
 
 __all__ = [
     "CLIModelAdapter",
@@ -34,9 +42,15 @@ __all__ = [
     "find_best_model_match",
     "get_model_provider",
     "local_endpoint",
+    "parse_multi_step_plan",
+    "parse_next_step_plan",
     "parse_plan",
+    "parse_rescue_result",
     "plan_goal",
+    "plan_multi_step_goal",
+    "plan_next_step",
     "post_json",
+    "rescue_agent",
     "run_cli_chat",
     "validate_choice",
 ]
@@ -272,3 +286,181 @@ def parse_plan(output, meta):
     except (ValueError, KeyError, TypeError, AttributeError):
         raise ValueError("Goal planner returned no valid plan; no action executed.") from None
     return {"requirements": requirements, "open": item, "finish": finish.strip()}, meta
+
+
+def plan_multi_step_goal(goal, fields=(), attempts=3):
+    """Decompose a goal into multi-step milestones or an initial step plan."""
+    context = {"goal": goal, "fields_on_page": list(fields)[:40]}
+    for attempt in range(attempts):
+        try:
+            return parse_multi_step_plan(*chat_json(MULTI_STEP_GOAL_PLAN, context))
+        except ValueError as error:
+            if "TEXT_MODEL_API_KEY" in str(error) or attempt == attempts - 1:
+                # Fallback to single-step plan_goal
+                try:
+                    plan, meta = plan_goal(goal, fields=fields, attempts=1)
+                    return {
+                        **plan,
+                        "steps": [goal],
+                        "step_index": 0,
+                        "is_final_step": True,
+                    }, meta
+                except Exception:
+                    raise
+
+
+def parse_multi_step_plan(output, meta):
+    try:
+        requirements = [
+            {"what": r["what"].strip(), "value": r["value"].strip()}
+            for r in output.get("requirements", [])
+            if isinstance(r.get("what"), str) and isinstance(r.get("value"), str) and r["value"].strip()
+        ]
+        finish = output.get("finish", "").strip()
+        item = output.get("open")
+        item = item.strip() if isinstance(item, str) and item.strip() else None
+        steps = output.get("steps")
+        if not isinstance(steps, list) or not steps:
+            steps = [output.get("step_name") or finish or "Initial step"]
+        steps = [str(s).strip() for s in steps if str(s).strip()]
+        step_index = int(output.get("step_index", 0))
+        is_final = bool(output.get("is_final_step", len(steps) <= 1))
+        if not finish or len(requirements) > 12:
+            raise ValueError()
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise ValueError("Multi-step goal planner returned no valid plan; no action executed.") from None
+    return {
+        "requirements": requirements,
+        "open": item,
+        "finish": finish,
+        "steps": steps,
+        "step_index": step_index,
+        "is_final_step": is_final,
+    }, meta
+
+
+def plan_next_step(goal, completed_steps, current_step_index, fields=(), page=None, attempts=3):
+    """Plan the next step based on completed steps and the current page state."""
+    page_data = {
+        "title": page.get("title", "") if page else "",
+        "url": page.get("url", "") if page else "",
+        "text": page.get("text", "")[:4000] if page else "",
+    } if page else {}
+    context = {
+        "goal": goal,
+        "completed_steps": list(completed_steps),
+        "current_step_index": current_step_index,
+        "fields_on_page": list(fields)[:40],
+        "page": page_data,
+    }
+    for attempt in range(attempts):
+        try:
+            return parse_next_step_plan(*chat_json(NEXT_STEP_PLAN, context))
+        except ValueError as error:
+            if "TEXT_MODEL_API_KEY" in str(error) or attempt == attempts - 1:
+                raise
+
+
+def parse_next_step_plan(output, meta):
+    try:
+        all_done = bool(output.get("all_steps_complete", False))
+        if all_done:
+            return {
+                "all_steps_complete": True,
+                "requirements": [],
+                "open": None,
+                "finish": output.get("finish", "All steps complete").strip(),
+                "is_final_step": True,
+            }, meta
+        requirements = [
+            {"what": r["what"].strip(), "value": r["value"].strip()}
+            for r in output.get("requirements", [])
+            if isinstance(r.get("what"), str) and isinstance(r.get("value"), str) and r["value"].strip()
+        ]
+        finish = output.get("finish", "").strip()
+        item = output.get("open")
+        item = item.strip() if isinstance(item, str) and item.strip() else None
+        is_final = bool(output.get("is_final_step", False))
+        step_name = output.get("step_name", finish)
+        if not finish or len(requirements) > 12:
+            raise ValueError()
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise ValueError("Next step planner returned no valid plan; no action executed.") from None
+    return {
+        "all_steps_complete": False,
+        "step_name": step_name,
+        "requirements": requirements,
+        "open": item,
+        "finish": finish,
+        "is_final_step": is_final,
+    }, meta
+
+
+def rescue_agent(goal, current_plan, page, history, problem="stuck", candidate_elements=(), attempts=2):
+    """Ask the text model to diagnose a stuck state and prescribe a corrective action."""
+    elements_summary = [
+        {"index": str(e.get("index")), "label": str(e.get("label", ""))[:60], "role": str(e.get("role", ""))}
+        for e in candidate_elements[:30]
+    ]
+    page_data = {
+        "title": page.get("title", ""),
+        "url": page.get("url", ""),
+        "text": page.get("text", "")[:3000],
+    }
+    context = {
+        "goal": goal,
+        "current_plan": current_plan,
+        "problem": problem,
+        "page": page_data,
+        "elements": elements_summary,
+        "recent_actions": [
+            {k: h.get(k) for k in ("action", "kind", "text", "choice") if k in h}
+            for h in history[-5:]
+        ],
+    }
+    for attempt in range(attempts):
+        try:
+            return parse_rescue_result(*chat_json(RESCUE_PROMPT, context))
+        except ValueError as error:
+            if "TEXT_MODEL_API_KEY" in str(error) or attempt == attempts - 1:
+                raise
+
+
+def parse_rescue_result(output, meta):
+    try:
+        action = output.get("action", "give_up").strip().lower()
+        if action not in ("click", "fill", "wait", "replan", "give_up"):
+            action = "give_up"
+        target = output.get("target")
+        target = str(target).strip() if target is not None else None
+        text = output.get("text")
+        text = str(text).strip() if text is not None else None
+        revised = output.get("revised_plan")
+        if isinstance(revised, dict) and "finish" in revised:
+            revised_plan = {
+                "requirements": [
+                    {"what": r["what"].strip(), "value": r["value"].strip()}
+                    for r in revised.get("requirements", [])
+                    if isinstance(r.get("what"), str) and isinstance(r.get("value"), str)
+                ],
+                "open": revised.get("open"),
+                "finish": str(revised["finish"]).strip(),
+            }
+        else:
+            revised_plan = None
+        reason = str(output.get("reason", "")).strip()
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return {
+            "action": "give_up",
+            "target": None,
+            "text": None,
+            "revised_plan": None,
+            "reason": "Failed to parse rescue response",
+        }, meta
+    return {
+        "action": action,
+        "target": target,
+        "text": text,
+        "revised_plan": revised_plan,
+        "reason": reason,
+    }, meta
